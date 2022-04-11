@@ -1,5 +1,4 @@
 import asyncio
-from email import header
 import json
 import logging
 import os
