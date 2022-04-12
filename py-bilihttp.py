@@ -1,47 +1,14 @@
 import asyncio
-import json
 import logging
 import os
-import sqlite3
-import time
+import json
 
 import aiohttp
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
-
-class Event:
-    known_type = [None, '文字', '图片', 3, 4, '撤回', 6, '分享视频']
-    def __init__(self, talker_id, data) -> None:
-        if isinstance(data, str):
-            data = json.loads(data)
-        self.data = data
-        self.msg_type = '收到' if talker_id == data.get('sender_uid') else '发送'
-        self.msg_content_type = data.get('msg_type')
-        self.msg_seqno = data.get('msg_seqno')
-        self.msg_key = data.get('msg_key')
-    
-    def __str__(self):
-        self.__content__()
-        if self.msg_type == '收到':
-            user_id = self.data.get('sender_uid')
-        else:
-            user_id = self.data.get('receiver_id')
-        timestr = time.strftime("[%Y/%m/%d %H:%M:%S]", time.localtime(self.data.get('timestamp')))
-        return f'{timestr}{self.msg_type} {user_id} {self.known_type[self.msg_content_type]} 信息: {self.content}'
-
-    def __content__(self):
-        cid = self.msg_content_type
-        content = json.loads(self.data.get('content'))
-        if cid == 1:
-            self.content = content.get('content')
-        elif cid == 2:
-            self.content = '[BL:image,file={url}]'.format_map(content)
-        elif cid == 5:
-            self.key = content
-            self.content = f'[BL:withdraw,key={content}]'
-        elif cid == 7:
-            self.content = '[BL:video,url={url}]'.format_map(content)
-
+from database import DataBase as DB
+from event import Event
+from adapter import cqBot
 
 
 class Bilihttp:
@@ -53,11 +20,13 @@ class Bilihttp:
     def __init__(self, headers, debug=False):
         self.maxSeqno = 0
         self.headers = headers
+        self.adapter = None
         self.sched = AsyncIOScheduler()
         if debug:
             self.logger.setLevel(logging.DEBUG)
         else:
             self.logger.setLevel(logging.INFO)
+
         if not os.path.exists('./data'):
             os.mkdir('./data')
         if not os.path.exists('./data/images'):
@@ -68,6 +37,9 @@ class Bilihttp:
 
     def __del__(self):
         asyncio.get_event_loop().run_until_complete(self.session.close())
+
+    def setAdapter(self, adapter: cqBot):
+        self.adapter = adapter
 
     async def fetch_session_msgs(self, talker_id: str, begin_seqno: int = 0):
         url = 'https://api.vc.bilibili.com/svr_sync/v1/svr_sync/fetch_session_msgs'
@@ -81,10 +53,8 @@ class Bilihttp:
         js = await r.json()
 
         if js['data']['messages']:
+            self.maxSeqno = max(self.maxSeqno, js['data']['messages'][0]['msg_seqno'])
             events = [Event(talker_id, message) for message in js['data']['messages']][::-1]
-            for event in events:
-                self.maxSeqno = max(self.maxSeqno, event.msg_seqno)
-                print(event)
             return events
         else:
             return []
@@ -92,10 +62,7 @@ class Bilihttp:
     async def run(self, uid):
         self.session = aiohttp.ClientSession(headers=self.headers)
 
-        conn = sqlite3.connect(f'./data/sqlite/{uid}.db', check_same_thread=False)
-        c = conn.cursor()
-        c.execute('CREATE TABLE IF NOT EXISTS DATA(SEQNO INT PRIMARY KEY,MKEY INT,MSG TEXT);')
-
+        db = DB(uid)
         uid = int(uid)
 
         @self.sched.scheduled_job('interval', seconds=3)
@@ -103,14 +70,27 @@ class Bilihttp:
             self.logger.debug('heartbeat')
             events = await self.fetch_session_msgs(uid, self.maxSeqno)
             for event in events:
-                if event.msg_content_type == 5:
-                    msg = c.execute(f'SELECT MSG FROM DATA WHERE MKEY = {event.key};').fetchone()[0]
-                    print(f'撤回消息 key={event.key} 内容', Event(uid, msg))
-                if not c.execute(f'SELECT * FROM DATA WHERE SEQNO = {event.msg_seqno};').fetchone():
-                    c.execute('INSERT INTO DATA (SEQNO,MKEY,MSG) VALUES (?,?,?);', (event.msg_seqno, event.msg_key, json.dumps(event.data, indent=4, ensure_ascii=False)))
-            conn.commit()
+                if not db.query(seqno=event.msg_seqno):
+                    print(event)
+                    if self.adapter:
+                        if not event.msg_content_type == 5:
+                            await self.adapter.send_private_msg(3099665076, event.bl2cq())
+                    db.insert(event.msg_seqno, event.msg_key, event.data)
+                    if event.msg_content_type == 5:
+                        msg = db.query('MSG', key=event.key)
+                        if msg:
+                            wdevent = Event(uid, msg[0])
+                            self.logger.info(f'撤回消息 key={event.key} 内容\n>>>{wdevent}')
+                            await self.adapter.send_private_msg(3099665076, f'{event.bl2cq()}:\n{wdevent.bl2cq()}')
+                        else:
+                            self.logger.error(f'尝试找回撤回消息 key={event.key} 内容失败')
+                            await self.adapter.send_private_msg(3099665076, f'{event.bl2cq()}\n尝试找回撤回消息失败')
+            db.save()
 
         self.sched.start()
+        if self.adapter:
+            await self.adapter.connect()
+            await self.adapter.run()
 
 Headers = {
     'Connection': 'keep-alive',
@@ -123,11 +103,19 @@ Headers = {
 }
 
 
-with open('./config.txt', 'r', encoding='utf-8') as f:
-    uid, cookies = f.read().split('\n')
-    Headers['cookie'] = cookies
+async def main():
+    with open('./config.json', 'r', encoding='utf-8') as fp:
+        config = json.load(fp)
+        uid = config['uid']
+        url = config.get('url')
+        Headers['cookie'] = config['cookie']
 
-bh = Bilihttp(Headers)
+    bh = Bilihttp(Headers, True)
+    if url:
+        bh.setAdapter(cqBot(url, True))
+    await bh.run(uid)
+
+
 loop = asyncio.get_event_loop()
-loop.run_until_complete(bh.run(uid))
+loop.run_until_complete(main())
 loop.run_forever()
