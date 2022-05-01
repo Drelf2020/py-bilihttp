@@ -7,7 +7,11 @@ import aiohttp
 
 class Event:
     known_type = [None, '文字', '图片', 3, 4, '撤回', 6, '分享视频']
-    def __init__(self, talker_id, data) -> None:
+    def __init__(self, talker_id, data):
+        '''信息事件类型
+        talker_id: 对话者 uid 用于判断接收或是发送消息
+        data 接收到的事件详细信息
+        '''
         if isinstance(data, str):
             data = json.loads(data)
         self.data = data
@@ -15,15 +19,18 @@ class Event:
         self.msg_content_type = data.get('msg_type')
         self.msg_seqno = data.get('msg_seqno')
         self.msg_key = data.get('msg_key')
-        self.__content__()
+        try:
+            self.__content__()
+        except Exception as e:
+            print(f'[Error][{e}]{data}')
     
     def __str__(self):
         if self.msg_type == '收到':
             user_id = self.data.get('sender_uid')
         else:
             user_id = self.data.get('receiver_id')
-        timestr = time.strftime("[%Y/%m/%d %H:%M:%S]", time.localtime(self.data.get('timestamp')))
-        return f'{timestr}{self.msg_type} {user_id} {self.known_type[self.msg_content_type]} 信息: {self.content}'
+        timestr = time.strftime("[%Y-%m-%d %H:%M:%S]", time.localtime(self.data.get('timestamp')))
+        return f'{timestr}[MSG]: {self.msg_type} {user_id} {self.known_type[self.msg_content_type]} 信息: {self.content}'
 
     def __content__(self):
         cid = self.msg_content_type
@@ -38,8 +45,12 @@ class Event:
             self.key = content
             self.content = f'[BL:withdraw,key={content}]'
         elif cid == 7:
-            self.url = content['url']
-            self.content = '[BL:video,url={url}]'.format_map(content)
+            try:
+                self.url = content['url']
+                self.content = '[BL:video,url={url}]'.format_map(content)
+            except Exception:
+                self.url = content['title']
+                self.content = '[BL:video,title={title}]'.format_map(content)
 
     def bl2cq(self):
         cid = self.msg_content_type
