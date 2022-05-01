@@ -24,3 +24,4 @@ build
 dist
 py-bilihttp.spec
 config.json
+qrcode.png
