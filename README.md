@@ -1,7 +1,8 @@
-# py-bilihttp
-```bilihttp``` 的 ```Python``` 实现
+# 已经绝赞移植到 [bilibili_api/session.py](https://github.com/Nemo2011/bilibili-api/blob/dev/bilibili_api/session.py)
 
-需要同目录下 ```config.json``` 文件存在，若不存在将自动生成
+**bilihttp** 的 **Python** 实现
+
+需要同目录下 **config.json** 文件存在，若不存在将自动生成
 
 ```json
 {
