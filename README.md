@@ -1,4 +1,4 @@
-# 已经绝赞移植到 [bilibili_api/session.py](https://github.com/Nemo2011/bilibili-api/blob/dev/bilibili_api/session.py)
+# 已经绝赞移植到 [bilibili_api/session.py](https://github.com/Nemo2011/bilibili-api/blob/main/bilibili_api/session.py)
 
 **bilihttp** 的 **Python** 实现
 
